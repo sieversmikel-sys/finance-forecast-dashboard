@@ -323,7 +323,7 @@ with st.sidebar:
     st.markdown(
         f"<span style='color:{GREY_HIST};font-size:.75rem;'>"
         "Trainingsfenster: 36 Monate rolling<br>"
-        "Modell: Facebook Prophet<br>"
+        "Modell: Facebook Prophet + AE-Regressor (Umsatz)<br>"
         "Konfidenz: 80%</span>",
         unsafe_allow_html=True,
     )

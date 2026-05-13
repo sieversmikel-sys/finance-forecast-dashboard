@@ -68,6 +68,21 @@ def mape(y_true: pd.Series, y_pred: pd.Series) -> float:
     return (((y_true[mask] - y_pred[mask]).abs() / y_true[mask].abs()) * 100).mean()
 
 
+def _forecast_ae_raw(df_linie: pd.DataFrame) -> pd.DataFrame:
+    """Hilfsforecast für AE (ohne Regressor) – liefert künftige AE-Werte für AE_lag1."""
+    serie = (
+        df_linie[["Datum", "Auftragseingang_TEUR"]]
+        .rename(columns={"Datum": "ds", "Auftragseingang_TEUR": "y"})
+        .sort_values("ds").reset_index(drop=True)
+    )
+    train = serie.tail(TRAIN_MONATE)
+    m = Prophet(**PROPHET_CONFIG["Auftragseingang_TEUR"])
+    m.fit(train, iter=300)
+    future = m.make_future_dataframe(periods=FORECAST_MONATE, freq="MS")
+    fc = m.predict(future)
+    return fc[["ds", "yhat"]].rename(columns={"yhat": "AE_fc"})
+
+
 # ---------------------------------------------------------------------------
 # Einzel-Forecast für eine Produktlinie + Zielgröße
 # ---------------------------------------------------------------------------
@@ -81,7 +96,10 @@ def forecast_serie(
     Trainiert Prophet auf den letzten TRAIN_MONATE Datenpunkten,
     erstellt FORECAST_MONATE-Vorschau, berechnet MAPE via Cross-Validation
     auf dem Trainingsset (Hold-out: letzte 6 Monate des Trainingsfensters).
+    Umsatz: zusätzlich AE_lag1 als Regressor (Auftragseingang Vormonat).
     """
+    use_ae = (zielgroesse == "Umsatz_TEUR")
+
     # Prophet erwartet 'ds' (Datum) und 'y' (Zielwert)
     serie = (
         df_linie[["Datum", zielgroesse]]
@@ -89,6 +107,18 @@ def forecast_serie(
         .sort_values("ds")
         .reset_index(drop=True)
     )
+
+    if use_ae:
+        ae_hist = (
+            df_linie[["Datum", "Auftragseingang_TEUR"]]
+            .sort_values("Datum").reset_index(drop=True)
+        )
+        ae_hist["AE_lag1"] = ae_hist["Auftragseingang_TEUR"].shift(1)
+        serie = serie.merge(
+            ae_hist[["Datum", "AE_lag1"]].rename(columns={"Datum": "ds"}),
+            on="ds", how="left"
+        )
+        serie = serie.dropna(subset=["AE_lag1"]).reset_index(drop=True)
 
     # Rollierendes Fenster: letzte 36 Monate für Training
     train = serie.tail(TRAIN_MONATE).reset_index(drop=True)
@@ -100,8 +130,13 @@ def forecast_serie(
 
     cfg = PROPHET_CONFIG[zielgroesse]
     m_cv = Prophet(**cfg)
+    if use_ae:
+        m_cv.add_regressor("AE_lag1")
     m_cv.fit(train_cv, iter=500)
     future_cv = m_cv.make_future_dataframe(periods=6, freq="MS")
+    if use_ae:
+        future_cv = future_cv.merge(train[["ds", "AE_lag1"]], on="ds", how="left")
+        future_cv["AE_lag1"] = future_cv["AE_lag1"].fillna(train["AE_lag1"].mean())
     pred_cv   = m_cv.predict(future_cv)
     pred_holdout = pred_cv[pred_cv["ds"].isin(holdout["ds"])]["yhat"].values
     mape_val  = mape(holdout["y"].reset_index(drop=True),
@@ -109,9 +144,31 @@ def forecast_serie(
 
     # Vollmodell auf allen 36 Monaten
     m = Prophet(**cfg)
+    if use_ae:
+        m.add_regressor("AE_lag1")
     m.fit(train, iter=500)
 
-    future    = m.make_future_dataframe(periods=FORECAST_MONATE, freq="MS")
+    future = m.make_future_dataframe(periods=FORECAST_MONATE, freq="MS")
+
+    if use_ae:
+        # Historische AE_lag1-Werte aus serie übernehmen
+        future = future.merge(serie[["ds", "AE_lag1"]], on="ds", how="left")
+
+        # Für Zukunftsmonate: AE_lag1[t] = AE-Forecast[t-1]
+        ae_fc      = _forecast_ae_raw(df_linie)
+        ae_fc_dict = ae_fc.set_index("ds")["AE_fc"].to_dict()
+        letzte_date = train["ds"].max()
+        last_ae     = float(df_linie.sort_values("Datum")["Auftragseingang_TEUR"].iloc[-1])
+
+        future_dates = sorted(future.loc[future["ds"] > letzte_date, "ds"].tolist())
+        prev_ae = last_ae
+        for t in future_dates:
+            future.loc[future["ds"] == t, "AE_lag1"] = prev_ae
+            if t in ae_fc_dict:
+                prev_ae = ae_fc_dict[t]
+
+        future["AE_lag1"] = future["AE_lag1"].fillna(train["AE_lag1"].mean())
+
     forecast  = m.predict(future)
 
     # Letztes bekanntes Datum im Training

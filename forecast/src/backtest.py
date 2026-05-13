@@ -69,12 +69,25 @@ def error_pct(actual: float, forecast: float) -> float:
 
 
 def backtest_serie(df_linie: pd.DataFrame, zielgroesse: str, linie: str) -> pd.DataFrame:
+    use_ae = (zielgroesse == "Umsatz_TEUR")
+
     serie = (
         df_linie[["Datum", zielgroesse]]
         .rename(columns={"Datum": "ds", zielgroesse: "y"})
         .sort_values("ds")
         .reset_index(drop=True)
     )
+
+    if use_ae:
+        ae_hist = (
+            df_linie[["Datum", "Auftragseingang_TEUR"]]
+            .sort_values("Datum").reset_index(drop=True)
+        )
+        ae_hist["AE_lag1"] = ae_hist["Auftragseingang_TEUR"].shift(1)
+        serie = serie.merge(
+            ae_hist[["Datum", "AE_lag1"]].rename(columns={"Datum": "ds"}),
+            on="ds", how="left"
+        )
 
     alle_daten = serie["ds"].sort_values().tolist()
     n = len(alle_daten)
@@ -84,19 +97,32 @@ def backtest_serie(df_linie: pd.DataFrame, zielgroesse: str, linie: str) -> pd.D
 
     rows = []
     for step in range(TEST_MONATE):
-        forecast_idx  = test_start_idx + step
-        train_end_idx = forecast_idx          # exklusiv
+        forecast_idx    = test_start_idx + step
+        train_end_idx   = forecast_idx          # exklusiv
         train_start_idx = train_end_idx - TRAIN_MONATE
 
-        train = serie.iloc[train_start_idx:train_end_idx].copy()
+        train    = serie.iloc[train_start_idx:train_end_idx].copy()
+        if use_ae:
+            train = train.dropna(subset=["AE_lag1"]).reset_index(drop=True)
         test_row = serie.iloc[forecast_idx]
 
         cfg = PROPHET_CONFIG[zielgroesse]
         m = Prophet(**cfg)
+        if use_ae:
+            m.add_regressor("AE_lag1")
         m.fit(train, iter=300)
 
         # 1 Monat voraus
-        future   = m.make_future_dataframe(periods=1, freq="MS")
+        future = m.make_future_dataframe(periods=1, freq="MS")
+        if use_ae:
+            future = future.merge(serie[["ds", "AE_lag1"]], on="ds", how="left")
+            # Forecast-Monat T: AE_lag1 = tatsächlicher AE von T-1 (letzter Trainingsmonat)
+            last_train_ae = float(
+                df_linie.loc[df_linie["Datum"] == train["ds"].max(), "Auftragseingang_TEUR"].values[0]
+            )
+            future.loc[future["ds"] == test_row["ds"], "AE_lag1"] = last_train_ae
+            future["AE_lag1"] = future["AE_lag1"].fillna(last_train_ae)
+
         forecast = m.predict(future)
         pred_row = forecast[forecast["ds"] == test_row["ds"]]
 
