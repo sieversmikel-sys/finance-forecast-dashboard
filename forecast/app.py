@@ -367,6 +367,23 @@ for _k, _v in _fte_defaults.items():
     if f"fte_{_k}" not in st.session_state:
         st.session_state[f"fte_{_k}"] = _v
 
+# Materialplanung
+_mat_defaults = {
+    "mat_gesamt_mio":  63.0,
+    "stahl_anteil":    35.0,
+    "elek_anteil":     30.0,
+    "kauf_anteil":     35.0,
+    "stahl_preis":      0.0,
+    "elek_preis":       0.0,
+    "kauf_preis":       0.0,
+    "stahl_wq":        60.0,
+    "elek_wq":         40.0,
+    "kauf_wq":         70.0,
+}
+for _k, _v in _mat_defaults.items():
+    if f"mat_{_k}" not in st.session_state:
+        st.session_state[f"mat_{_k}"] = _v
+
 
 # ---------------------------------------------------------------------------
 # Sidebar – Navigation + Filter + Szenario-Slider
@@ -379,7 +396,7 @@ with st.sidebar:
 
     seite = st.radio(
         "Navigation",
-        ["Forecast-Übersicht", "Abweichungsanalyse", "Personalplanung"],
+        ["Forecast-Übersicht", "Abweichungsanalyse", "Personalplanung", "Materialplanung"],
         label_visibility="collapsed",
     )
     st.markdown("---")
@@ -1323,6 +1340,214 @@ else:
         f"{f' + {delta_fte_n:+d}&nbsp;FTE' if delta_fte_n != 0 else ''}) "
         f"= {pk_plan/1000:.1f}&nbsp;Mio.&nbsp;EUR Plankosten\" — "
         f"transparent, nachvollziehbar, verteidigbar.</span>",
+        unsafe_allow_html=True,
+    )
+
+
+# ===========================================================================
+# SEITE 4: Materialplanung – Preis-Mengen-Brücke
+# ===========================================================================
+if seite == "Materialplanung":
+    st.markdown("# Materialplanung – Preis-Mengen-Brücke")
+    st.markdown(
+        f"<span style='color:{GREY_HIST};'>Materialaufwand 2025: Kategorien · Preiseffekte · "
+        f"Weitergabequote · Margenbelastung · Sensitivität</span>",
+        unsafe_allow_html=True,
+    )
+
+    with st.sidebar:
+        st.markdown("---")
+        st.markdown(
+            f"<span style='color:{GOLD};font-size:.85rem;font-weight:700;'>"
+            "Materialstruktur</span>",
+            unsafe_allow_html=True,
+        )
+        st.slider("Materialaufwand Ist 2024 (Mio.)", 30.0, 100.0, step=0.5,  key="mat_mat_gesamt_mio")
+        st.markdown(
+            f"<span style='color:{GREY_HIST};font-size:.75rem;'>Kategorien-Anteile (%) — Σ sollte 100</span>",
+            unsafe_allow_html=True,
+        )
+        st.slider("Stahl-Anteil (%)",      10, 60, step=1, key="mat_stahl_anteil")
+        st.slider("Elektronik-Anteil (%)", 10, 60, step=1, key="mat_elek_anteil")
+        st.slider("Kaufteile-Anteil (%)",  10, 60, step=1, key="mat_kauf_anteil")
+        st.markdown("---")
+        st.markdown(
+            f"<span style='color:{GOLD};font-size:.85rem;font-weight:700;'>"
+            "Preisannahmen 2025</span>",
+            unsafe_allow_html=True,
+        )
+        st.slider("Stahl: Preisänderung (%)",      -20, 25, step=1, format="%d%%", key="mat_stahl_preis")
+        st.slider("Elektronik: Preisänderung (%)", -20, 25, step=1, format="%d%%", key="mat_elek_preis")
+        st.slider("Kaufteile: Preisänderung (%)",  -20, 25, step=1, format="%d%%", key="mat_kauf_preis")
+        st.markdown("---")
+        st.markdown(
+            f"<span style='color:{GOLD};font-size:.85rem;font-weight:700;'>"
+            "Weitergabequote</span>",
+            unsafe_allow_html=True,
+        )
+        st.slider("Stahl: Weitergabe an Kunden (%)",      0, 100, step=5, format="%d%%", key="mat_stahl_wq")
+        st.slider("Elektronik: Weitergabe an Kunden (%)", 0, 100, step=5, format="%d%%", key="mat_elek_wq")
+        st.slider("Kaufteile: Weitergabe an Kunden (%)",  0, 100, step=5, format="%d%%", key="mat_kauf_wq")
+
+    # ── Berechnungen ──────────────────────────────────────────────────────────
+    mat_ist   = st.session_state["mat_mat_gesamt_mio"] * 1_000   # TEUR
+    s_ant     = st.session_state["mat_stahl_anteil"]   / 100
+    e_ant     = st.session_state["mat_elek_anteil"]    / 100
+    k_ant     = st.session_state["mat_kauf_anteil"]    / 100
+    ant_sum   = s_ant + e_ant + k_ant
+
+    # Normalisieren falls Summe ≠ 100%
+    s_ant, e_ant, k_ant = (s_ant/ant_sum, e_ant/ant_sum, k_ant/ant_sum) if ant_sum > 0 else (1/3, 1/3, 1/3)
+
+    stahl_ist  = mat_ist * s_ant
+    elek_ist   = mat_ist * e_ant
+    kauf_ist   = mat_ist * k_ant
+
+    def mat_effekte(ist, preis_pct, wq_pct):
+        brutto       = ist * preis_pct / 100
+        weitergabe   = brutto * wq_pct / 100
+        margenbelast = brutto - weitergabe
+        return brutto, weitergabe, margenbelast
+
+    s_brutto, s_wg, s_mb = mat_effekte(stahl_ist, st.session_state["mat_stahl_preis"], st.session_state["mat_stahl_wq"])
+    e_brutto, e_wg, e_mb = mat_effekte(elek_ist,  st.session_state["mat_elek_preis"],  st.session_state["mat_elek_wq"])
+    k_brutto, k_wg, k_mb = mat_effekte(kauf_ist,  st.session_state["mat_kauf_preis"],  st.session_state["mat_kauf_wq"])
+
+    mat_plan_netto = mat_ist + s_mb + e_mb + k_mb   # Materialaufwand nach Margenbelastung
+    mb_gesamt      = s_mb + e_mb + k_mb
+    wg_gesamt      = s_wg + e_wg + k_wg
+    brutto_gesamt  = s_brutto + e_brutto + k_brutto
+    sensitivitaet  = mat_ist / 100                   # Kosten je +1 PP Preisanstieg, 0% Weitergabe
+    mat_quote_plan = mat_plan_netto / (mat_ist * (1 + (s_wg+e_wg+k_wg)/mat_ist)) * 100 if mat_ist > 0 else 0
+
+    # ── KPI-Zeile ─────────────────────────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown(kpi_card(
+            "Materialaufwand Plan",
+            f"{mat_plan_netto/1000:.1f} Mio.",
+            f"{mb_gesamt/1000:+.2f} Mio. Margenbelastung",
+            "down" if mb_gesamt > 0 else "up",
+        ), unsafe_allow_html=True)
+    with c2:
+        st.markdown(kpi_card(
+            "Margenbelastung",
+            f"{mb_gesamt/1000:.2f} Mio.",
+            "nicht weitergegeben",
+            "down" if mb_gesamt > 0 else "up",
+        ), unsafe_allow_html=True)
+    with c3:
+        gew_preiseffekt = brutto_gesamt / mat_ist * 100 if mat_ist > 0 else 0
+        st.markdown(kpi_card(
+            "Gewichteter Preiseffekt",
+            f"{gew_preiseffekt:+.1f}%",
+            "ggü. Vorjahr",
+            "down" if gew_preiseffekt > 0 else "up",
+        ), unsafe_allow_html=True)
+    with c4:
+        st.markdown(kpi_card(
+            "Sensitivität +1 PP Preis",
+            f"{sensitivitaet/1000:.2f} Mio.",
+            "auf Materialaufwand",
+            "neut",
+        ), unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Zwei Spalten: Wasserfall + Kategorientabelle ──────────────────────────
+    col_wf, col_tbl = st.columns([3, 2])
+
+    with col_wf:
+        st.markdown("#### Materialaufwand-Brücke: Ist 2024 → Plan 2025")
+        wf_x = [
+            "Ist 2024",
+            f"Stahl\n({st.session_state['mat_stahl_preis']:+d}%)",
+            f"Elektronik\n({st.session_state['mat_elek_preis']:+d}%)",
+            f"Kaufteile\n({st.session_state['mat_kauf_preis']:+d}%)",
+            "Plan 2025\n(Margenbelastung)",
+        ]
+        fig_mat = go.Figure(go.Waterfall(
+            measure      = ["absolute", "relative", "relative", "relative", "total"],
+            x            = wf_x,
+            y            = [mat_ist, s_mb, e_mb, k_mb, 0],
+            text         = [
+                f"{mat_ist/1000:.1f} Mio.",
+                f"{s_mb/1000:+.2f} Mio.",
+                f"{e_mb/1000:+.2f} Mio.",
+                f"{k_mb/1000:+.2f} Mio.",
+                f"{mat_plan_netto/1000:.1f} Mio.",
+            ],
+            textposition = "outside",
+            textfont     = dict(color="white", size=11),
+            increasing   = {"marker": {"color": "rgba(192,57,43,0.85)"}},
+            decreasing   = {"marker": {"color": "rgba(30,132,73,0.85)"}},
+            totals       = {"marker": {"color": GOLD}},
+            connector    = {"line": {"color": "rgba(255,255,255,0.15)", "dash": "dot"}},
+        ))
+        fig_mat.update_layout(
+            paper_bgcolor = DARK_BLUE, plot_bgcolor = DARK_BLUE,
+            font=dict(color="white"),
+            yaxis=dict(title="TEUR", gridcolor="rgba(255,255,255,0.08)", tickformat=",.0f"),
+            xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
+            height=380, margin=dict(t=30, b=10, l=10, r=10), showlegend=False,
+        )
+        st.plotly_chart(fig_mat, use_container_width=True)
+
+    with col_tbl:
+        st.markdown("#### Kategorien-Detail")
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        kategorien = [
+            ("Stahl",      stahl_ist, st.session_state["mat_stahl_preis"],  st.session_state["mat_stahl_wq"],  s_brutto, s_wg, s_mb),
+            ("Elektronik", elek_ist,  st.session_state["mat_elek_preis"],   st.session_state["mat_elek_wq"],   e_brutto, e_wg, e_mb),
+            ("Kaufteile",  kauf_ist,  st.session_state["mat_kauf_preis"],   st.session_state["mat_kauf_wq"],   k_brutto, k_wg, k_mb),
+        ]
+        th = f"color:{GOLD};border-bottom:1px solid rgba(255,255,255,0.15);padding:5px 4px;font-size:.8rem;"
+        tbl = (f"<table style='width:100%;border-collapse:collapse;font-size:.8rem;'>"
+               f"<thead><tr>"
+               f"<th style='text-align:left;{th}'>Kategorie</th>"
+               f"<th style='text-align:right;{th}'>Ist</th>"
+               f"<th style='text-align:right;{th}'>Brutto-Eff.</th>"
+               f"<th style='text-align:right;{th}'>Weitergabe</th>"
+               f"<th style='text-align:right;{th}'>Margenbelast.</th>"
+               f"</tr></thead><tbody>")
+        for i, (name, ist_v, preis, wq, brutto, wg, mb) in enumerate(kategorien):
+            bg = "rgba(255,255,255,0.04)" if i % 2 == 0 else "transparent"
+            mb_col = f"color:{RED};" if mb > 0 else (f"color:{GREEN};" if mb < 0 else "")
+            tbl += (f"<tr style='background:{bg};'>"
+                    f"<td style='padding:5px 4px;font-weight:600;'>{name}</td>"
+                    f"<td style='text-align:right;padding:5px 4px;'>{ist_v/1000:.1f}</td>"
+                    f"<td style='text-align:right;padding:5px 4px;'>{brutto/1000:+.2f}</td>"
+                    f"<td style='text-align:right;padding:5px 4px;color:{GREEN};'>{wg/1000:+.2f}</td>"
+                    f"<td style='text-align:right;padding:5px 4px;{mb_col}'>{mb/1000:+.2f}</td>"
+                    f"</tr>")
+        # Summenzeile
+        tbl += (f"<tr style='border-top:1px solid rgba(255,255,255,0.2);font-weight:700;'>"
+                f"<td style='padding:5px 4px;'>Gesamt</td>"
+                f"<td style='text-align:right;padding:5px 4px;'>{mat_ist/1000:.1f}</td>"
+                f"<td style='text-align:right;padding:5px 4px;'>{brutto_gesamt/1000:+.2f}</td>"
+                f"<td style='text-align:right;padding:5px 4px;color:{GREEN};'>{wg_gesamt/1000:+.2f}</td>"
+                f"<td style='text-align:right;padding:5px 4px;color:{RED if mb_gesamt>0 else GREEN};'>{mb_gesamt/1000:+.2f}</td>"
+                f"</tr></tbody></table>")
+        st.markdown(tbl, unsafe_allow_html=True)
+        st.markdown(
+            f"<span style='color:{GREY_HIST};font-size:.75rem;'>Angaben in Mio. EUR · "
+            f"Weitergabe = Preiseffekt der an Kunden überwälzt wird</span>",
+            unsafe_allow_html=True,
+        )
+
+    # ── Sensitivitäts-Hinweis ─────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown(
+        f"<span style='color:{GREY_HIST};font-size:.82rem;'>"
+        f"💡 <strong style='color:white;'>Board-Kennzahl:</strong> "
+        f"Jeder +1&nbsp;PP Rohstoffpreisanstieg kostet "
+        f"<strong style='color:white;'>{sensitivitaet/1000:.2f}&nbsp;Mio.&nbsp;EUR</strong> Materialaufwand "
+        f"(ohne Weitergabe). Bei einer Weitergabequote von "
+        f"{(wg_gesamt/brutto_gesamt*100 if brutto_gesamt != 0 else 0):.0f}% "
+        f"verbleiben <strong style='color:white;'>{mb_gesamt/1000:.2f}&nbsp;Mio.&nbsp;EUR</strong> "
+        f"als EBITDA-Belastung.</span>",
         unsafe_allow_html=True,
     )
 
