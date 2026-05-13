@@ -1462,9 +1462,9 @@ if seite == "Materialplanung":
         st.markdown("#### Materialaufwand-Brücke: Ist 2024 → Plan 2025")
         wf_x = [
             "Ist 2024",
-            f"Stahl\n({st.session_state['mat_stahl_preis']:+d}%)",
-            f"Elektronik\n({st.session_state['mat_elek_preis']:+d}%)",
-            f"Kaufteile\n({st.session_state['mat_kauf_preis']:+d}%)",
+            f"Stahl\n({st.session_state['mat_stahl_preis']:+.0f}%)",
+            f"Elektronik\n({st.session_state['mat_elek_preis']:+.0f}%)",
+            f"Kaufteile\n({st.session_state['mat_kauf_preis']:+.0f}%)",
             "Plan 2025\n(Margenbelastung)",
         ]
         fig_mat = go.Figure(go.Waterfall(
