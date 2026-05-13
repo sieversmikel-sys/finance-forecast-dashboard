@@ -379,9 +379,23 @@ with st.sidebar:
             f"<span style='color:{GREY_HIST};font-size:.8rem;'>Aktives Szenario {badge}</span>",
             unsafe_allow_html=True,
         )
+
+        st.markdown("---")
+        st.markdown(
+            f"<span style='color:{GOLD};font-size:.85rem;font-weight:700;'>"
+            "CFO-Brückenrechnung</span>",
+            unsafe_allow_html=True,
+        )
+        preiskorrektur = st.slider(
+            "Preiskorrektur 2025 (vs. Forecast)",
+            -15, 15, 0, format="%d%%",
+            help="Annahme: Wie verändert sich der Umsatz durch Preiseffekte? "
+                 "0% = Prophet-Forecast unverändert. Proxy für PPI-Einfluss.",
+        )
     else:
-        ae_shock    = 0
-        kostendruck = 0
+        ae_shock       = 0
+        kostendruck    = 0
+        preiskorrektur = 0
 
     st.markdown("---")
     st.markdown(
@@ -795,6 +809,97 @@ if seite == "Forecast-Übersicht":
             f"</span>",
             unsafe_allow_html=True,
         )
+
+    # ── CFO-Brückenrechnung (Wasserfall) ──────────────────────────────────────
+    if ziel_label == "Umsatz_TEUR":
+        bm_all   = lade_benchmarks()
+        bm_key   = linie_label if linie_label else "Gesamt"
+        ist_2024 = bm_all.get(bm_key, {}).get("vorjahr_flat", 0.0)
+        fc_sum   = float(fc["yhat"].sum())
+
+        organisch     = fc_sum - ist_2024
+        preisanpassung = fc_sum * preiskorrektur / 100
+        fc_adjusted   = fc_sum + preisanpassung
+
+        st.markdown("---")
+        st.markdown("#### CFO-Brückenrechnung: 2024 Ist → 2025 Forecast")
+        st.markdown(
+            f"<span style='color:{GREY_HIST};font-size:.82rem;'>"
+            f"Produktlinie: <strong>{bm_key}</strong> · "
+            f"Preiskorrektur: <strong>{preiskorrektur:+d}%</strong></span>",
+            unsafe_allow_html=True,
+        )
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        wf_measure = ["absolute", "relative", "relative", "total"]
+        wf_x       = ["Ist 2024", "Organisches\nWachstum", f"Preiskorrektur\n({preiskorrektur:+d}%)", "Forecast 2025\nadjustiert"]
+        wf_y       = [ist_2024, organisch, preisanpassung, 0]
+        wf_text    = [
+            f"{ist_2024/1000:.1f} Mio.",
+            f"{organisch/1000:+.1f} Mio.",
+            f"{preisanpassung/1000:+.1f} Mio." if preiskorrektur != 0 else "0",
+            f"{fc_adjusted/1000:.1f} Mio.",
+        ]
+        wf_colors = {
+            "increasing": {"marker": {"color": "rgba(30,132,73,0.85)"}},
+            "decreasing": {"marker": {"color": "rgba(192,57,43,0.85)"}},
+            "total":      {"marker": {"color": GOLD}},
+        }
+
+        fig_wf = go.Figure(go.Waterfall(
+            measure       = wf_measure,
+            x             = wf_x,
+            y             = wf_y,
+            text          = wf_text,
+            textposition  = "outside",
+            textfont      = dict(color="white", size=12),
+            increasing    = wf_colors["increasing"],
+            decreasing    = wf_colors["decreasing"],
+            totals        = wf_colors["total"],
+            connector     = {"line": {"color": "rgba(255,255,255,0.2)", "dash": "dot"}},
+        ))
+        fig_wf.update_layout(
+            paper_bgcolor = DARK_BLUE,
+            plot_bgcolor  = DARK_BLUE,
+            font          = dict(color="white"),
+            yaxis         = dict(
+                title       = "TEUR",
+                gridcolor   = "rgba(255,255,255,0.08)",
+                tickformat  = ",.0f",
+            ),
+            xaxis = dict(gridcolor="rgba(255,255,255,0.05)"),
+            height        = 360,
+            margin        = dict(t=30, b=20, l=20, r=20),
+            showlegend    = False,
+        )
+        st.plotly_chart(fig_wf, use_container_width=True)
+
+        # KPI-Zeile unter dem Wasserfall
+        c1, c2, c3 = st.columns(3)
+        wachstum_pct    = organisch / ist_2024 * 100 if ist_2024 > 0 else 0
+        preis_pct_delta = preisanpassung / ist_2024 * 100 if ist_2024 > 0 else 0
+        gesamt_pct      = (fc_adjusted / ist_2024 - 1) * 100 if ist_2024 > 0 else 0
+        with c1:
+            st.markdown(kpi_card(
+                "Organisches Wachstum",
+                f"{organisch/1000:+.1f} Mio.",
+                f"{wachstum_pct:+.1f}% ggü. Vorjahr",
+                "up" if organisch >= 0 else "down",
+            ), unsafe_allow_html=True)
+        with c2:
+            st.markdown(kpi_card(
+                f"Preiskorrektur ({preiskorrektur:+d}%)",
+                f"{preisanpassung/1000:+.1f} Mio.",
+                f"{preis_pct_delta:+.1f} PP auf Wachstum",
+                "up" if preisanpassung >= 0 else "down",
+            ), unsafe_allow_html=True)
+        with c3:
+            st.markdown(kpi_card(
+                "Forecast 2025 adjustiert",
+                f"{fc_adjusted/1000:.1f} Mio.",
+                f"{gesamt_pct:+.1f}% ggü. Ist 2024",
+                "up" if fc_adjusted >= ist_2024 else "down",
+            ), unsafe_allow_html=True)
 
 
 # ===========================================================================
