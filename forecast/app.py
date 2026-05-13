@@ -39,6 +39,22 @@ FIXKOSTENQUOTE  = 0.22          # Fixkosten = 22 % des Umsatz (Showcase-Annahme)
 OPTIM_AE        = +15.0         # Optimistisch: AE-Schock fix
 OPTIM_KOST      = -10.0         # Optimistisch: Kostenentlastung fix
 
+# CFO-Brückenrechnung – Basis-Annahmen (Gesamt, TEUR)
+CFO_BASE: dict = {
+    "umsatz_mio":   107.5,
+    "vk_pct":        58.6,
+    "material_mio":   0.0,
+    "overhead_mio":  12.0,
+    "abschr_mio":     3.8,
+    "sonst_mio":      4.2,
+    "vv_mio":         3.6,
+}
+CFO_PRESETS: dict = {
+    "Base Case":    CFO_BASE.copy(),
+    "Stress":       {**CFO_BASE, "umsatz_mio": 96.2, "vk_pct": 63.0, "material_mio": -2.0},
+    "Optimistisch": {**CFO_BASE, "umsatz_mio": 112.9, "vk_pct": 55.0, "material_mio":  1.5},
+}
+
 # ---------------------------------------------------------------------------
 # Seiten-Config & globales CSS
 # ---------------------------------------------------------------------------
@@ -333,6 +349,14 @@ def kommentar_text(
 
 
 # ---------------------------------------------------------------------------
+# Session-State – CFO-Brücke initialisieren
+# ---------------------------------------------------------------------------
+for _k, _v in CFO_BASE.items():
+    if f"cfo_{_k}" not in st.session_state:
+        st.session_state[f"cfo_{_k}"] = _v
+
+
+# ---------------------------------------------------------------------------
 # Sidebar – Navigation + Filter + Szenario-Slider
 # ---------------------------------------------------------------------------
 with st.sidebar:
@@ -386,16 +410,44 @@ with st.sidebar:
             "CFO-Brückenrechnung</span>",
             unsafe_allow_html=True,
         )
-        preiskorrektur = st.slider(
-            "Preiskorrektur 2025 (vs. Forecast)",
-            -15, 15, 0, format="%d%%",
-            help="Annahme: Wie verändert sich der Umsatz durch Preiseffekte? "
-                 "0% = Prophet-Forecast unverändert. Proxy für PPI-Einfluss.",
+
+        # Preset-Buttons
+        p_cols = st.columns(4)
+        for _i, _label in enumerate(["Base Case", "Stress", "Optimistisch", "Eigene"]):
+            with p_cols[_i]:
+                _active = st.session_state.get("cfo_preset", "Base Case") == _label
+                if st.button(
+                    _label,
+                    key=f"preset_{_label}",
+                    use_container_width=True,
+                    type="primary" if _active else "secondary",
+                ):
+                    if _label in CFO_PRESETS:
+                        for _k, _v in CFO_PRESETS[_label].items():
+                            st.session_state[f"cfo_{_k}"] = _v
+                    st.session_state["cfo_preset"] = _label
+                    st.rerun()
+
+        st.markdown(
+            f"<span style='color:{GREY_HIST};font-size:.75rem;'>Umsatz &amp; variable Kosten</span>",
+            unsafe_allow_html=True,
         )
+        st.slider("Umsatz (Mio.)",       60.0, 150.0, step=0.5, key="cfo_umsatz_mio")
+        st.slider("Var. Kosten (% Umsatz)", 40.0, 75.0, step=0.5, key="cfo_vk_pct")
+        st.slider("Materialpreis-Effekt (Mio.)", -10.0, 10.0, step=0.5, key="cfo_material_mio")
+
+        st.markdown(
+            f"<span style='color:{GREY_HIST};font-size:.75rem;'>Fixkostenstruktur</span>",
+            unsafe_allow_html=True,
+        )
+        st.slider("Personalkosten Overhead (Mio.)",     5.0, 25.0, step=0.5, key="cfo_overhead_mio")
+        st.slider("Abschreibungen (Mio.)",              1.0,  8.0, step=0.1, key="cfo_abschr_mio")
+        st.slider("Sonst. betr. Aufwendungen (Mio.)",   1.0,  8.0, step=0.1, key="cfo_sonst_mio")
+        st.slider("Vertrieb & Verwaltung (Mio.)",       1.0,  8.0, step=0.1, key="cfo_vv_mio")
+
     else:
         ae_shock       = 0
         kostendruck    = 0
-        preiskorrektur = 0
 
     st.markdown("---")
     st.markdown(
@@ -810,95 +862,128 @@ if seite == "Forecast-Übersicht":
             unsafe_allow_html=True,
         )
 
-    # ── CFO-Brückenrechnung (Wasserfall) ──────────────────────────────────────
+    # ── CFO-Brückenrechnung (vollständiger P&L-Wasserfall) ───────────────────
     if ziel_label == "Umsatz_TEUR":
         bm_all   = lade_benchmarks()
         bm_key   = linie_label if linie_label else "Gesamt"
         ist_2024 = bm_all.get(bm_key, {}).get("vorjahr_flat", 0.0)
         fc_sum   = float(fc["yhat"].sum())
 
-        organisch     = fc_sum - ist_2024
-        preisanpassung = fc_sum * preiskorrektur / 100
-        fc_adjusted   = fc_sum + preisanpassung
+        # CFO-Annahmen aus Session-State (TEUR)
+        cfo_umsatz   = st.session_state["cfo_umsatz_mio"]   * 1_000
+        cfo_vk_pct   = st.session_state["cfo_vk_pct"]
+        cfo_material = st.session_state["cfo_material_mio"] * 1_000
+        cfo_overhead = st.session_state["cfo_overhead_mio"] * 1_000
+        cfo_abschr   = st.session_state["cfo_abschr_mio"]   * 1_000
+        cfo_sonst    = st.session_state["cfo_sonst_mio"]    * 1_000
+        cfo_vv       = st.session_state["cfo_vv_mio"]       * 1_000
+        cfo_preset   = st.session_state.get("cfo_preset", "Base Case")
+
+        var_kosten_basis = cfo_umsatz * cfo_vk_pct / 100
+        db               = cfo_umsatz - var_kosten_basis + cfo_material
+        fixkosten_sum    = cfo_overhead + cfo_abschr + cfo_sonst + cfo_vv
+        ebitda           = db - fixkosten_sum
+        db_marge         = db / cfo_umsatz * 100 if cfo_umsatz > 0 else 0
+        breakeven        = fixkosten_sum / (db_marge / 100) if db_marge > 0 else 0
+        safety_margin    = (cfo_umsatz - breakeven) / cfo_umsatz * 100 if cfo_umsatz > 0 else 0
 
         st.markdown("---")
-        st.markdown("#### CFO-Brückenrechnung: 2024 Ist → 2025 Forecast")
+        st.markdown(f"#### CFO-Brückenrechnung — Szenario: {cfo_preset}")
         st.markdown(
             f"<span style='color:{GREY_HIST};font-size:.82rem;'>"
             f"Produktlinie: <strong>{bm_key}</strong> · "
-            f"Preiskorrektur: <strong>{preiskorrektur:+d}%</strong></span>",
+            f"Umsatz: <strong>{cfo_umsatz/1000:.1f} Mio.</strong> · "
+            f"VK-Quote: <strong>{cfo_vk_pct:.1f}%</strong></span>",
             unsafe_allow_html=True,
         )
         st.markdown("<br>", unsafe_allow_html=True)
 
-        wf_measure = ["absolute", "relative", "relative", "total"]
-        wf_x       = ["Ist 2024", "Organisches\nWachstum", f"Preiskorrektur\n({preiskorrektur:+d}%)", "Forecast 2025\nadjustiert"]
-        wf_y       = [ist_2024, organisch, preisanpassung, 0]
-        wf_text    = [
-            f"{ist_2024/1000:.1f} Mio.",
-            f"{organisch/1000:+.1f} Mio.",
-            f"{preisanpassung/1000:+.1f} Mio." if preiskorrektur != 0 else "0",
-            f"{fc_adjusted/1000:.1f} Mio.",
+        # ── P&L-Wasserfall ────────────────────────────────────────────────────
+        wf_x = [
+            "Umsatz", "Var. Kosten", "Materialpreis\nEffekt",
+            "= Deck.-\nbeitrag",
+            "Personal\nOverhead", "Abschr.", "Sonst.", "V&V",
+            "= EBITDA",
         ]
-        wf_colors = {
-            "increasing": {"marker": {"color": "rgba(30,132,73,0.85)"}},
-            "decreasing": {"marker": {"color": "rgba(192,57,43,0.85)"}},
-            "total":      {"marker": {"color": GOLD}},
-        }
-
-        fig_wf = go.Figure(go.Waterfall(
-            measure       = wf_measure,
-            x             = wf_x,
-            y             = wf_y,
-            text          = wf_text,
-            textposition  = "outside",
-            textfont      = dict(color="white", size=12),
-            increasing    = wf_colors["increasing"],
-            decreasing    = wf_colors["decreasing"],
-            totals        = wf_colors["total"],
-            connector     = {"line": {"color": "rgba(255,255,255,0.2)", "dash": "dot"}},
+        wf_m = ["absolute", "relative", "relative", "total",
+                "relative", "relative", "relative", "relative", "total"]
+        wf_y = [
+            cfo_umsatz,
+            -var_kosten_basis,
+            cfo_material,
+            0,
+            -cfo_overhead, -cfo_abschr, -cfo_sonst, -cfo_vv,
+            0,
+        ]
+        wf_txt = [
+            f"{cfo_umsatz/1000:.1f} Mio.",
+            f"{-var_kosten_basis/1000:.1f} Mio.",
+            f"{cfo_material/1000:+.1f} Mio." if cfo_material != 0 else "—",
+            f"{db/1000:.1f} Mio.  ({db_marge:.1f}%)",
+            f"{-cfo_overhead/1000:.1f} Mio.",
+            f"{-cfo_abschr/1000:.1f} Mio.",
+            f"{-cfo_sonst/1000:.1f} Mio.",
+            f"{-cfo_vv/1000:.1f} Mio.",
+            f"{ebitda/1000:.1f} Mio.",
+        ]
+        fig_pnl = go.Figure(go.Waterfall(
+            measure      = wf_m,
+            x            = wf_x,
+            y            = wf_y,
+            text         = wf_txt,
+            textposition = "outside",
+            textfont     = dict(color="white", size=11),
+            increasing   = {"marker": {"color": "rgba(30,132,73,0.85)"}},
+            decreasing   = {"marker": {"color": "rgba(192,57,43,0.85)"}},
+            totals       = {"marker": {"color": GOLD}},
+            connector    = {"line": {"color": "rgba(255,255,255,0.15)", "dash": "dot"}},
         ))
-        fig_wf.update_layout(
+        fig_pnl.update_layout(
             paper_bgcolor = DARK_BLUE,
             plot_bgcolor  = DARK_BLUE,
             font          = dict(color="white"),
             yaxis         = dict(
-                title       = "TEUR",
-                gridcolor   = "rgba(255,255,255,0.08)",
-                tickformat  = ",.0f",
+                title      = "TEUR",
+                gridcolor  = "rgba(255,255,255,0.08)",
+                tickformat = ",.0f",
             ),
-            xaxis = dict(gridcolor="rgba(255,255,255,0.05)"),
-            height        = 360,
-            margin        = dict(t=30, b=20, l=20, r=20),
-            showlegend    = False,
+            xaxis  = dict(gridcolor="rgba(255,255,255,0.05)"),
+            height = 400,
+            margin = dict(t=30, b=10, l=10, r=10),
+            showlegend = False,
         )
-        st.plotly_chart(fig_wf, use_container_width=True)
+        st.plotly_chart(fig_pnl, use_container_width=True)
 
-        # KPI-Zeile unter dem Wasserfall
-        c1, c2, c3 = st.columns(3)
-        wachstum_pct    = organisch / ist_2024 * 100 if ist_2024 > 0 else 0
-        preis_pct_delta = preisanpassung / ist_2024 * 100 if ist_2024 > 0 else 0
-        gesamt_pct      = (fc_adjusted / ist_2024 - 1) * 100 if ist_2024 > 0 else 0
+        # ── KPI-Zeile ─────────────────────────────────────────────────────────
+        c1, c2, c3, c4 = st.columns(4)
         with c1:
             st.markdown(kpi_card(
-                "Organisches Wachstum",
-                f"{organisch/1000:+.1f} Mio.",
-                f"{wachstum_pct:+.1f}% ggü. Vorjahr",
-                "up" if organisch >= 0 else "down",
+                "Deckungsbeitrag",
+                f"{db/1000:.1f} Mio.",
+                f"DB-Marge {db_marge:.1f}%",
+                "up" if db >= 0 else "down",
             ), unsafe_allow_html=True)
         with c2:
             st.markdown(kpi_card(
-                f"Preiskorrektur ({preiskorrektur:+d}%)",
-                f"{preisanpassung/1000:+.1f} Mio.",
-                f"{preis_pct_delta:+.1f} PP auf Wachstum",
-                "up" if preisanpassung >= 0 else "down",
+                "EBITDA",
+                f"{ebitda/1000:.1f} Mio.",
+                f"Marge {ebitda/cfo_umsatz*100:.1f}%" if cfo_umsatz > 0 else "",
+                "up" if ebitda >= 0 else "down",
             ), unsafe_allow_html=True)
         with c3:
             st.markdown(kpi_card(
-                "Forecast 2025 adjustiert",
-                f"{fc_adjusted/1000:.1f} Mio.",
-                f"{gesamt_pct:+.1f}% ggü. Ist 2024",
-                "up" if fc_adjusted >= ist_2024 else "down",
+                "Break-even-Umsatz",
+                f"{breakeven/1000:.1f} Mio.",
+                f"Safety Margin {safety_margin:.1f}%",
+                "up" if safety_margin > 15 else ("neut" if safety_margin > 0 else "down"),
+            ), unsafe_allow_html=True)
+        with c4:
+            fixkosten_pct = fixkosten_sum / cfo_umsatz * 100 if cfo_umsatz > 0 else 0
+            st.markdown(kpi_card(
+                "Fixkosten gesamt",
+                f"{fixkosten_sum/1000:.1f} Mio.",
+                f"{fixkosten_pct:.1f}% des Umsatzes",
+                "neut",
             ), unsafe_allow_html=True)
 
 
