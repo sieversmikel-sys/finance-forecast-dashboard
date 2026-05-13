@@ -146,6 +146,51 @@ def lade_vk_ratios() -> dict[str, float]:
     return ratios
 
 @st.cache_data
+def lade_preis_volumen() -> pd.DataFrame:
+    """
+    Preis-Volumen-Spaltung via VK-Quote als Proxy.
+    Methode: Wenn VK-Quote(t) < VK-Quote(t-1) → Preiserhöhung (Pricing Power).
+             Realer Umsatz = Nominal / Preis-Faktor.
+             Preiseffekt + Volumeneffekt = Nominales Wachstum.
+    Hinweis: Proxy, kein echter Preisindex (z.B. Destatis PPI).
+    """
+    df = pd.read_csv(DATA_DIR / "raw_data.csv", sep=";", decimal=",")
+    rows = []
+    linien = ["Gesamt"] + sorted(df["Produktlinie"].unique().tolist())
+
+    for linie in linien:
+        sub = df if linie == "Gesamt" else df[df["Produktlinie"] == linie]
+        jd = (
+            sub.groupby("Jahr")
+            .agg(Umsatz=("Umsatz_TEUR", "sum"), VarKosten=("Var_Kosten_TEUR", "sum"))
+            .reset_index()
+        )
+        jd["vk_quote"] = jd["VarKosten"] / jd["Umsatz"]
+
+        for i in range(1, len(jd)):
+            cur  = jd.iloc[i]
+            prev = jd.iloc[i - 1]
+            nominal = cur["Umsatz"] / prev["Umsatz"] - 1
+
+            # Preis-Faktor: VK-Quote-Änderung als Proxy für Pricing Power
+            # VK-Quote sinkt → Preise gestiegen → price_factor > 1
+            price_factor = prev["vk_quote"] / cur["vk_quote"] if cur["vk_quote"] > 0 else 1.0
+            umsatz_real  = cur["Umsatz"] / price_factor
+            volume       = umsatz_real / prev["Umsatz"] - 1
+            price        = nominal - volume
+
+            rows.append({
+                "Produktlinie":       linie,
+                "periode":            f"{int(prev['Jahr'])}→{int(cur['Jahr'])}",
+                "wachstum_nominal":   round(nominal * 100, 1),
+                "preiseffekt":        round(price   * 100, 1),
+                "volumeneffekt":      round(volume  * 100, 1),
+                "vk_quote_pct":       round(cur["vk_quote"] * 100, 1),
+            })
+    return pd.DataFrame(rows)
+
+
+@st.cache_data
 def lade_benchmarks() -> dict:
     """Naive Benchmarks je Produktlinie + Gesamt für Plausibilitäts-Check."""
     df = pd.read_csv(DATA_DIR / "raw_data.csv", sep=";", decimal=",")
@@ -678,6 +723,76 @@ if seite == "Forecast-Übersicht":
             f"und <strong style='color:white;'>{abw_cagr_pct:+.1f}%</strong> gegenüber dem historischen "
             f"CAGR-Trend ({cagr_pct:.1f}% p.a.). "
             f"Liegt Prophet deutlich über beiden Benchmarks → Annahmen explizit kommunizieren.</span>",
+            unsafe_allow_html=True,
+        )
+
+    # ── Preis-Volumen-Spaltung ────────────────────────────────────────────────
+    if ziel_label == "Umsatz_TEUR":
+        pv_all = lade_preis_volumen()
+        pv = pv_all[pv_all["Produktlinie"] == (linie_label or "Gesamt")].copy()
+
+        st.markdown("---")
+        st.markdown("#### Preis-Volumen-Spaltung — Historisches Umsatzwachstum")
+        st.markdown(
+            f"<span style='color:{GREY_HIST};font-size:.82rem;'>"
+            f"Proxy via VK-Quote-Änderung · kein echter Preisindex (Destatis PPI) · "
+            f"Produktlinie: <strong>{linie_label or 'Gesamt'}</strong></span>",
+            unsafe_allow_html=True,
+        )
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        fig_pv = go.Figure()
+        fig_pv.add_trace(go.Bar(
+            name="Volumeneffekt",
+            x=pv["periode"],
+            y=pv["volumeneffekt"],
+            marker_color="rgba(30,132,73,0.85)",
+            text=[f"{v:+.1f}%" for v in pv["volumeneffekt"]],
+            textposition="inside",
+        ))
+        fig_pv.add_trace(go.Bar(
+            name="Preiseffekt (Proxy)",
+            x=pv["periode"],
+            y=pv["preiseffekt"],
+            marker_color=f"rgba(200,151,58,0.85)",
+            text=[f"{v:+.1f}%" for v in pv["preiseffekt"]],
+            textposition="inside",
+        ))
+        # Nominal-Wachstum als Linie
+        fig_pv.add_trace(go.Scatter(
+            name="Nominal gesamt",
+            x=pv["periode"],
+            y=pv["wachstum_nominal"],
+            mode="markers+text",
+            marker=dict(color="white", size=10, symbol="diamond"),
+            text=[f"{v:+.1f}%" for v in pv["wachstum_nominal"]],
+            textposition="top center",
+            textfont=dict(color="white", size=11),
+        ))
+        fig_pv.update_layout(
+            barmode="relative",
+            paper_bgcolor=DARK_BLUE,
+            plot_bgcolor=DARK_BLUE,
+            font=dict(color="white"),
+            legend=dict(orientation="h", y=1.12, bgcolor="rgba(0,0,0,0)"),
+            yaxis=dict(
+                title="Wachstum in %",
+                ticksuffix="%",
+                gridcolor="rgba(255,255,255,0.08)",
+                zeroline=True,
+                zerolinecolor="rgba(255,255,255,0.3)",
+            ),
+            xaxis=dict(gridcolor="rgba(255,255,255,0.05)"),
+            height=320,
+            margin=dict(t=40, b=20, l=20, r=20),
+        )
+        st.plotly_chart(fig_pv, use_container_width=True)
+
+        st.markdown(
+            f"<span style='color:{GREY_HIST};font-size:.80rem;'>"
+            f"⚠️ Methode: Preiseffekt = Δ Nominalwachstum nach Herausrechnen der VK-Quote-Änderung. "
+            f"Für echte Preis-Volumen-Analyse: Erzeugerpreisindex Maschinenbau (Destatis GP09-28) als Regressor verwenden."
+            f"</span>",
             unsafe_allow_html=True,
         )
 
