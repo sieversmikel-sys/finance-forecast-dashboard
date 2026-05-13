@@ -145,6 +145,25 @@ def lade_vk_ratios() -> dict[str, float]:
     ratios["Gesamt"] = float(df["Var_Kosten_TEUR"].sum() / df["Umsatz_TEUR"].sum())
     return ratios
 
+@st.cache_data
+def lade_benchmarks() -> dict:
+    """Naive Benchmarks je Produktlinie + Gesamt für Plausibilitäts-Check."""
+    df = pd.read_csv(DATA_DIR / "raw_data.csv", sep=";", decimal=",")
+    result = {}
+    gruppen = [("Gesamt", df)] + [
+        (str(l), df[df["Produktlinie"] == l]) for l in sorted(df["Produktlinie"].unique())
+    ]
+    for key, sub in gruppen:
+        j2021 = float(sub[sub["Jahr"] == 2021]["Umsatz_TEUR"].sum())
+        j2024 = float(sub[sub["Jahr"] == 2024]["Umsatz_TEUR"].sum())
+        cagr  = (j2024 / j2021) ** (1 / 3) - 1 if j2021 > 0 else 0.0
+        result[key] = {
+            "vorjahr_flat":   j2024,
+            "cagr_3j":        cagr,
+            "cagr_forecast":  j2024 * (1 + cagr),
+        }
+    return result
+
 
 # ---------------------------------------------------------------------------
 # Hilfsfunktionen
@@ -596,6 +615,71 @@ if seite == "Forecast-Übersicht":
         tbl[["Monat", "Base Case", "Optimistisch", "Pessimistisch", "Δ Pess."]],
         hide_index=True, use_container_width=True,
     )
+
+    # ── Plausibilitäts-Check ──────────────────────────────────────────────────
+    if ziel_label == "Umsatz_TEUR":
+        bm_all      = lade_benchmarks()
+        bm_key      = linie_label if linie_label else "Gesamt"
+        bm          = bm_all.get(bm_key, {})
+        prophet_sum = float(fc["yhat"].sum())
+        vorjahr     = bm.get("vorjahr_flat", 0.0)
+        cagr_fc     = bm.get("cagr_forecast", 0.0)
+        cagr_pct    = bm.get("cagr_3j", 0.0) * 100
+
+        d_vorjahr = prophet_sum - vorjahr
+        d_cagr    = prophet_sum - cagr_fc
+
+        abw_vorjahr_pct = (prophet_sum / vorjahr - 1) * 100 if vorjahr > 0 else 0.0
+        abw_cagr_pct    = (prophet_sum / cagr_fc - 1) * 100 if cagr_fc  > 0 else 0.0
+
+        if abs(abw_vorjahr_pct) < 5:
+            ampel, urteil = "🟢", "plausibel"
+        elif abs(abw_vorjahr_pct) < 15:
+            ampel, urteil = "🟡", "kritisch prüfen"
+        else:
+            ampel, urteil = "🔴", "hinterfragen"
+
+        st.markdown("---")
+        st.markdown("#### Plausibilitäts-Check: Prophet vs. Naive Benchmarks")
+        st.markdown(
+            f"<span style='color:{GREY_HIST};font-size:.85rem;'>"
+            f"Gesamt-Umsatz 12 Monate · Produktlinie: <strong>{bm_key}</strong></span>",
+            unsafe_allow_html=True,
+        )
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown(kpi_card(
+                "Vorjahr flat (2024)",
+                f"{vorjahr/1000:.1f} Mio.",
+                f"{d_vorjahr/1000:+.1f} Mio. ggü. Prophet",
+                "down" if d_vorjahr > 0 else "up",
+            ), unsafe_allow_html=True)
+        with c2:
+            st.markdown(kpi_card(
+                f"Ø CAGR 3J ({cagr_pct:.1f}% p.a.)",
+                f"{cagr_fc/1000:.1f} Mio.",
+                f"{d_cagr/1000:+.1f} Mio. ggü. Prophet",
+                "down" if d_cagr > 0 else "up",
+            ), unsafe_allow_html=True)
+        with c3:
+            st.markdown(kpi_card(
+                "Prophet Base Case",
+                f"{prophet_sum/1000:.1f} Mio.",
+                f"{ampel} {urteil}",
+                "neut",
+            ), unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown(
+            f"<span style='color:{GREY_HIST};font-size:.82rem;'>"
+            f"Prophet liegt <strong style='color:white;'>{abw_vorjahr_pct:+.1f}%</strong> über Vorjahr "
+            f"und <strong style='color:white;'>{abw_cagr_pct:+.1f}%</strong> gegenüber dem historischen "
+            f"CAGR-Trend ({cagr_pct:.1f}% p.a.). "
+            f"Liegt Prophet deutlich über beiden Benchmarks → Annahmen explizit kommunizieren.</span>",
+            unsafe_allow_html=True,
+        )
 
 
 # ===========================================================================
