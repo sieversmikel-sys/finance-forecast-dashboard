@@ -17,9 +17,12 @@ An interactive rolling 12-month forecast dashboard for a mid-size machinery manu
 ## Features
 
 - **Rolling 12-month forecast** – Facebook Prophet trained on a 36-month sliding window
-- **Backtesting** – 12 consecutive 1-month-ahead forecasts (Jan–Dec 2024), MAPE per product line
+- **AE lead indicator** – Order intake (Auftragseingang) as `add_regressor` in Prophet; improves MAPE for the Service product line by −3 pp
+- **Backtesting** – 12 consecutive 1-month-ahead forecasts (Jan–Dec 2024), MAPE per product line with traffic-light colouring
 - **Scenario simulation** – Sidebar sliders for order intake shock (−30 % → +20 %) and cost pressure (±15 %), with three chart lines: Base Case | Optimistic | Pessimistic
 - **EBITDA delta KPIs** – Instant impact of each scenario on 12-month EBITDA
+- **Naive benchmark check** – Prophet vs. prior-year flat and 3-year CAGR; plausibility traffic light
+- **Price-volume decomposition** – Historical revenue growth split into price effect and volume effect via variable-cost-ratio proxy
 - **Auto-commentary** – Plain-text narrative generated from slider values and model output
 
 ---
@@ -93,6 +96,23 @@ Synthetic data simulates three product lines over 48 months:
 | Service | 1,200 TEUR | +8.0 % | Recurring, low seasonality |
 
 COVID dampening factors applied to Q1–Q3 2021. Random seed fixed at 42 for reproducibility.
+
+---
+
+---
+
+## Methodical limitations & Phase 2 roadmap
+
+The current model uses synthetic data and a variable-cost-ratio proxy for the price-volume split. For production use with real data, the following extensions are recommended:
+
+| # | Extension | Method | Expected MAPE impact |
+|---|-----------|--------|----------------------|
+| 1 | **Producer Price Index as regressor** | Destatis GP09-28 (Maschinenbau) via `add_regressor` — separates real volume growth from pricing effects in the forecast | −2 to −4 pp (where price cycles dominate) |
+| 2 | **Backlog / order book depth** | Remaining order backlog as a second lead indicator alongside AE lag-1 | −1 to −3 pp for Sonderanlagen |
+| 3 | **Holiday & shutdown calendar** | German factory holidays (Betriebsurlaub) as Prophet regressors — currently causing July/August underestimates | −1 to −2 pp |
+| 4 | **Automatic model selection** | Cross-validate Prophet vs. SARIMA vs. LightGBM; auto-select by MAPE | depends on data |
+
+**On the price-volume proxy:** The current decomposition uses changes in the variable-cost ratio as a price proxy. For a rigorous analysis, replace it with the Destatis Erzeugerpreisindex Maschinenbau (series GP09-28), available monthly via [www-genesis.destatis.de](https://www-genesis.destatis.de). This lets you answer the CFO question: *"How much of our +7.6 % growth is real volume — and what happens to the forecast if input prices fall 10 % in 2025?"*
 
 ---
 
