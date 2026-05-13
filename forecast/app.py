@@ -355,6 +355,18 @@ for _k, _v in CFO_BASE.items():
     if f"cfo_{_k}" not in st.session_state:
         st.session_state[f"cfo_{_k}"] = _v
 
+# Personalplanung
+_fte_defaults = {
+    "fte_basis": 80,        # FTE Ist 2024
+    "fte_plan": 80,         # FTE Plan 2025
+    "pk_basis_mio": 12.0,   # Personalkosten Ist 2024 (Mio.)
+    "tarif_pct": 2.5,       # Tariferhöhung %
+    "seniorit_pct": 0.5,    # Senioritätseffekt %
+}
+for _k, _v in _fte_defaults.items():
+    if f"fte_{_k}" not in st.session_state:
+        st.session_state[f"fte_{_k}"] = _v
+
 
 # ---------------------------------------------------------------------------
 # Sidebar – Navigation + Filter + Szenario-Slider
@@ -367,7 +379,7 @@ with st.sidebar:
 
     seite = st.radio(
         "Navigation",
-        ["Forecast-Übersicht", "Abweichungsanalyse"],
+        ["Forecast-Übersicht", "Abweichungsanalyse", "Personalplanung"],
         label_visibility="collapsed",
     )
     st.markdown("---")
@@ -990,7 +1002,7 @@ if seite == "Forecast-Übersicht":
 # ===========================================================================
 # SEITE 2: Abweichungsanalyse
 # ===========================================================================
-else:
+elif seite == "Abweichungsanalyse":
     st.markdown("# Abweichungsanalyse – Backtesting")
     st.markdown(
         f"<span style='color:{GREY_HIST};'>Rollierender 1-Monats-ahead-Forecast · "
@@ -1122,6 +1134,195 @@ else:
         "🟢 Grün: |Abw.| &lt; 5% &nbsp;|&nbsp; "
         "🟡 Gelb: 5–10% &nbsp;|&nbsp; "
         "🔴 Rot: &gt; 10%</span>",
+        unsafe_allow_html=True,
+    )
+
+
+# ===========================================================================
+# SEITE 3: Personalplanung – FTE-Treibermodell
+# ===========================================================================
+else:
+    st.markdown("# Personalplanung – FTE-Treibermodell")
+    st.markdown(
+        f"<span style='color:{GREY_HIST};'>Planwert: Basiskosten × FTE-Plan × (1 + Tarif) × (1 + Seniorität) · "
+        f"Angaben in Mio. EUR</span>",
+        unsafe_allow_html=True,
+    )
+
+    # ── Sidebar-Sliders für Seite 3 ──────────────────────────────────────────
+    # (Sliders werden hier gelesen – sidebar-Block oben hat sie nur für Seite 1)
+    with st.sidebar:
+        st.markdown("---")
+        st.markdown(
+            f"<span style='color:{GOLD};font-size:.85rem;font-weight:700;'>"
+            "FTE-Annahmen</span>",
+            unsafe_allow_html=True,
+        )
+        st.slider("FTE Ist 2024",          40, 200, key="fte_fte_basis",   step=1)
+        st.slider("FTE Plan 2025",         40, 200, key="fte_fte_plan",    step=1)
+        st.slider("Personalkosten Ist (Mio.)", 2.0, 30.0, key="fte_pk_basis_mio", step=0.5)
+        st.markdown("---")
+        st.markdown(
+            f"<span style='color:{GREY_HIST};font-size:.75rem;'>Treiber-Annahmen</span>",
+            unsafe_allow_html=True,
+        )
+        st.slider("Tariferhöhung (%)",     0.0, 8.0, key="fte_tarif_pct",    step=0.1, format="%.1f%%")
+        st.slider("Senioritätseffekt (%)", 0.0, 3.0, key="fte_seniorit_pct", step=0.1, format="%.1f%%")
+
+    # ── Berechnungen ──────────────────────────────────────────────────────────
+    fte_basis    = st.session_state["fte_fte_basis"]
+    fte_plan     = st.session_state["fte_fte_plan"]
+    pk_basis     = st.session_state["fte_pk_basis_mio"] * 1_000   # TEUR
+    tarif_pct    = st.session_state["fte_tarif_pct"]
+    seniorit_pct = st.session_state["fte_seniorit_pct"]
+
+    pk_je_fte_basis = pk_basis / fte_basis if fte_basis > 0 else 0
+
+    # Plan: Basiskosten je FTE × FTE-Plan × Tarif × Seniorität
+    pk_plan         = pk_je_fte_basis * fte_plan * (1 + tarif_pct / 100) * (1 + seniorit_pct / 100)
+    delta_fte_eff   = pk_je_fte_basis * (fte_plan - fte_basis)                         # FTE-Effekt
+    tarif_eff       = pk_je_fte_basis * fte_plan * (tarif_pct / 100)                   # Tarifeffekt
+    seniorit_eff    = pk_je_fte_basis * fte_plan * (1 + tarif_pct / 100) * (seniorit_pct / 100)
+    delta_gesamt    = pk_plan - pk_basis
+
+    # ── KPI-Zeile ─────────────────────────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        st.markdown(kpi_card(
+            "Plankosten 2025",
+            f"{pk_plan/1000:.1f} Mio.",
+            f"{delta_gesamt/1000:+.1f} Mio. ggü. Ist",
+            "down" if delta_gesamt > 0 else "up",
+        ), unsafe_allow_html=True)
+    with c2:
+        st.markdown(kpi_card(
+            "Kosten je FTE (Basis)",
+            f"{pk_je_fte_basis:.0f} TEUR",
+            f"bei {fte_basis} FTE Ist",
+            "neut",
+        ), unsafe_allow_html=True)
+    with c3:
+        delta_fte_n = fte_plan - fte_basis
+        st.markdown(kpi_card(
+            "FTE-Änderung",
+            f"{delta_fte_n:+d} FTE",
+            f"{fte_basis} → {fte_plan}",
+            "up" if delta_fte_n <= 0 else "down",
+        ), unsafe_allow_html=True)
+    with c4:
+        gesamtanstieg = (pk_plan / pk_basis - 1) * 100 if pk_basis > 0 else 0
+        st.markdown(kpi_card(
+            "Gesamtanstieg",
+            f"{gesamtanstieg:+.1f}%",
+            f"Tarif {tarif_pct:.1f}% + Senior. {seniorit_pct:.1f}%",
+            "down" if gesamtanstieg > 0 else "up",
+        ), unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ── Wasserfall: Ist → Treiber → Plan ──────────────────────────────────────
+    st.markdown("#### Personalkosten-Brücke: Ist 2024 → Plan 2025")
+    col_wf, col_table = st.columns([3, 2])
+
+    with col_wf:
+        fig_fte = go.Figure(go.Waterfall(
+            measure      = ["absolute", "relative", "relative", "relative", "total"],
+            x            = [
+                "Ist 2024",
+                f"FTE-Effekt\n({delta_fte_n:+d} FTE)",
+                f"Tarif\n(+{tarif_pct:.1f}%)",
+                f"Seniorität\n(+{seniorit_pct:.1f}%)",
+                "Plan 2025",
+            ],
+            y            = [pk_basis, delta_fte_eff, tarif_eff, seniorit_eff, 0],
+            text         = [
+                f"{pk_basis/1000:.1f} Mio.",
+                f"{delta_fte_eff/1000:+.1f} Mio.",
+                f"{tarif_eff/1000:+.1f} Mio.",
+                f"{seniorit_eff/1000:+.1f} Mio.",
+                f"{pk_plan/1000:.1f} Mio.",
+            ],
+            textposition = "outside",
+            textfont     = dict(color="white", size=11),
+            increasing   = {"marker": {"color": "rgba(192,57,43,0.85)"}},
+            decreasing   = {"marker": {"color": "rgba(30,132,73,0.85)"}},
+            totals       = {"marker": {"color": GOLD}},
+            connector    = {"line": {"color": "rgba(255,255,255,0.15)", "dash": "dot"}},
+        ))
+        fig_fte.update_layout(
+            paper_bgcolor = DARK_BLUE,
+            plot_bgcolor  = DARK_BLUE,
+            font          = dict(color="white"),
+            yaxis         = dict(
+                title      = "TEUR",
+                gridcolor  = "rgba(255,255,255,0.08)",
+                tickformat = ",.0f",
+            ),
+            xaxis     = dict(gridcolor="rgba(255,255,255,0.05)"),
+            height    = 380,
+            margin    = dict(t=30, b=10, l=10, r=10),
+            showlegend = False,
+        )
+        st.plotly_chart(fig_fte, use_container_width=True)
+
+    with col_table:
+        st.markdown(f"#### Treiberrechnung")
+        st.markdown("<br>", unsafe_allow_html=True)
+        rows_tbl = [
+            ("Personalkosten Ist 2024",    f"{pk_basis/1000:.1f} Mio.",       ""),
+            ("÷ FTE Ist",                  f"{fte_basis} FTE",                 ""),
+            ("= Kosten je FTE",            f"{pk_je_fte_basis:.0f} TEUR",      ""),
+            ("× FTE Plan 2025",            f"{fte_plan} FTE",                  f"{delta_fte_eff/1000:+.2f} Mio."),
+            ("× (1 + Tarif)",              f"× {1+tarif_pct/100:.3f}",         f"{tarif_eff/1000:+.2f} Mio."),
+            ("× (1 + Seniorität)",         f"× {1+seniorit_pct/100:.3f}",      f"{seniorit_eff/1000:+.2f} Mio."),
+            ("= Plankosten 2025",          f"{pk_plan/1000:.1f} Mio.",         f"{delta_gesamt/1000:+.2f} Mio."),
+        ]
+        tbl_html = (
+            f"<table style='width:100%;border-collapse:collapse;font-size:.85rem;'>"
+            f"<thead><tr>"
+            f"<th style='text-align:left;padding:6px 4px;color:{GOLD};border-bottom:1px solid rgba(255,255,255,0.15);'>Schritt</th>"
+            f"<th style='text-align:right;padding:6px 4px;color:{GOLD};border-bottom:1px solid rgba(255,255,255,0.15);'>Wert</th>"
+            f"<th style='text-align:right;padding:6px 4px;color:{GOLD};border-bottom:1px solid rgba(255,255,255,0.15);'>Effekt</th>"
+            f"</tr></thead><tbody>"
+        )
+        for i, (step, val, eff) in enumerate(rows_tbl):
+            bg = "rgba(255,255,255,0.04)" if i % 2 == 0 else "transparent"
+            bold = "font-weight:700;" if i in (0, len(rows_tbl)-1) else ""
+            eff_color = (f"color:{RED};" if eff.startswith("+") else
+                         f"color:{GREEN};" if eff.startswith("-") else "")
+            tbl_html += (
+                f"<tr style='background:{bg};'>"
+                f"<td style='padding:5px 4px;{bold}'>{step}</td>"
+                f"<td style='text-align:right;padding:5px 4px;{bold}'>{val}</td>"
+                f"<td style='text-align:right;padding:5px 4px;{eff_color}{bold}'>{eff}</td>"
+                f"</tr>"
+            )
+        tbl_html += "</tbody></table>"
+        st.markdown(tbl_html, unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown(
+            f"<span style='color:{GREY_HIST};font-size:.78rem;'>"
+            f"Formel: Basiskosten&nbsp;÷&nbsp;FTE&nbsp;Ist "
+            f"×&nbsp;FTE&nbsp;Plan "
+            f"×&nbsp;(1&nbsp;+&nbsp;Tarif) "
+            f"×&nbsp;(1&nbsp;+&nbsp;Seniorität)"
+            f"</span>",
+            unsafe_allow_html=True,
+        )
+
+    # ── Sensitivitäts-Hinweis ─────────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown(
+        f"<span style='color:{GREY_HIST};font-size:.82rem;'>"
+        f"💡 <strong style='color:white;'>Budgetgespräch-Formulierung:</strong> "
+        f"\"Personalkosten steigen um <strong style='color:white;'>{gesamtanstieg:+.1f}%</strong> "
+        f"({tarif_pct:.1f}%&nbsp;Tarif "
+        f"+ {seniorit_pct:.1f}%&nbsp;Seniorität"
+        f"{f' + {delta_fte_n:+d}&nbsp;FTE' if delta_fte_n != 0 else ''}) "
+        f"= {pk_plan/1000:.1f}&nbsp;Mio.&nbsp;EUR Plankosten\" — "
+        f"transparent, nachvollziehbar, verteidigbar.</span>",
         unsafe_allow_html=True,
     )
 
